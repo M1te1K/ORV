@@ -26,16 +26,20 @@ ORVI Simulator (macOS) - шуточная программа, имитирующ
   - в терминале: pkill -f orvi_mac.py
   - Ctrl+C, если скрипт запущен в терминале на переднем плане
 
+При обычном запуске добавляет пользовательский LaunchAgent для следующего входа.
+Удалить автозапуск и остановить экземпляр, запущенный агентом: --uninstall.
+
 ВАЖНО: предназначено только для запуска на собственном компьютере либо на компьютере
-человека, который знает и согласен на розыгрыш. Эта версия не добавляет себя в
-автозапуск - запускается только вручную.
+человека, который знает и согласен на розыгрыш.
 """
 
 import fcntl
 import os
+import plistlib
 import random
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -61,11 +65,72 @@ VOLUME_DELTA_MAX = 20
 APP_SUPPORT_DIR = os.path.expanduser("~/Library/Application Support/ORVISimulator")
 LOCK_PATH = os.path.join(APP_SUPPORT_DIR, "orvi.lock")
 STOP_FLAG_PATH = os.path.join(APP_SUPPORT_DIR, "orvi.stop")
+AGENT_LABEL = "com.orvi.simulator"
+AGENT_PATH = os.path.expanduser(f"~/Library/LaunchAgents/{AGENT_LABEL}.plist")
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 SOUNDS_DIR = os.path.join(SCRIPT_DIR, "sounds")
 
 stop_event = threading.Event()
+
+
+def _agent_target():
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, os.path.abspath(__file__)]
+
+
+def _launchctl(*args, check=True):
+    return subprocess.run(
+        ["/bin/launchctl", *args], check=check, capture_output=True, text=True,
+    )
+
+
+def enable_autostart():
+    """Установить видимый LaunchAgent текущего пользователя в GUI-сеансе."""
+    domain = f"gui/{os.getuid()}"
+    service = f"{domain}/{AGENT_LABEL}"
+    data = plistlib.dumps({
+        "Label": AGENT_LABEL,
+        "ProgramArguments": _agent_target(),
+        "RunAtLoad": True,
+    })
+    os.makedirs(os.path.dirname(AGENT_PATH), exist_ok=True)
+    try:
+        with open(AGENT_PATH, "rb") as existing:
+            unchanged = existing.read() == data
+    except FileNotFoundError:
+        unchanged = False
+
+    loaded = _launchctl("print", service, check=False).returncode == 0
+    if unchanged and loaded:
+        return
+    if loaded:
+        _launchctl("bootout", service)
+
+    fd, temporary_path = tempfile.mkstemp(
+        prefix=f".{AGENT_LABEL}.", suffix=".plist", dir=os.path.dirname(AGENT_PATH),
+    )
+    try:
+        with os.fdopen(fd, "wb") as temporary_file:
+            temporary_file.write(data)
+        os.chmod(temporary_path, 0o644)
+        os.replace(temporary_path, AGENT_PATH)
+    finally:
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+    _launchctl("bootstrap", domain, AGENT_PATH)
+
+
+def disable_autostart():
+    """Снять агент с регистрации и удалить его plist."""
+    service = f"gui/{os.getuid()}/{AGENT_LABEL}"
+    if _launchctl("print", service, check=False).returncode == 0:
+        _launchctl("bootout", service)
+    try:
+        os.unlink(AGENT_PATH)
+    except FileNotFoundError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -317,15 +382,36 @@ def acquire_single_instance_lock():
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1].lower() in ("--uninstall", "-u"):
+        try:
+            disable_autostart()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"Не удалось удалить автозапуск: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
     lock = acquire_single_instance_lock()
     if lock is None:
-        sys.exit(0)
+        return 0
+
+    # Stop-файл мог остаться, если Stop_ORVI.command запустили без работающей программы.
+    try:
+        os.unlink(STOP_FLAG_PATH)
+    except FileNotFoundError:
+        pass
+
+    try:
+        enable_autostart()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"Не удалось включить автозапуск: {exc}", file=sys.stderr)
+        return 1
 
     watcher = threading.Thread(target=stop_flag_watcher, daemon=True)
     watcher.start()
 
     scheduler_loop()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
