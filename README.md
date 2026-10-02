@@ -12,10 +12,11 @@
 [`mac/README_mac.md`](mac/README_mac.md). При обычном запуске macOS-версия создаёт
 пользовательский LaunchAgent; команда `--uninstall` удаляет его.
 
-Windows-сборка в старой папке `dist/` была создана до последних изменений в
-`orvi.py` и **не является актуальным выпуском**. Обновлённый `.exe` собирается
-на Windows командой ниже; workflow `.github/workflows/build-windows.yml`
-публикует результат в `releases/` после запуска на GitHub Actions.
+Актуальная Windows-сборка x64: [`releases/ORVISimulator-Windows-x64.zip`](releases/ORVISimulator-Windows-x64.zip).
+Оба архива хранятся прямо в Git. Промежуточные папки `build/` и `dist/` исключены;
+старый `.exe` из `dist/` удалён из отслеживаемых файлов. Windows-архив собирает
+workflow [`.github/workflows/build-windows.yml`](.github/workflows/build-windows.yml)
+на Windows runner после изменений исходника.
 
 ## Что делает
 
